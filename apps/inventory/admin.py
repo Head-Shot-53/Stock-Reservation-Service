@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Product, Warehouse
+from .models import Product, Warehouse, Stock
 
 
 @admin.register(Product)
@@ -54,3 +54,44 @@ class WarehouseAdmin(admin.ModelAdmin):
         "created_at",
         "updated_at",
     )
+
+
+@admin.register(Stock)
+class StockAdmin(admin.ModelAdmin):
+    list_display = (
+        "product",
+        "warehouse",
+        "quantity",
+        "reserved_quantity",
+        "available_quantity_display",
+        "updated_at",
+    )
+    search_fields = (
+        "product__sku",
+        "product__name",
+        "warehouse__code",
+        "warehouse__name",
+    )
+    list_filter = (
+        "warehouse",
+        "product__is_active",
+        "warehouse__is_active",
+    )
+    list_select_related = (
+        "product",
+        "warehouse",
+    )
+    readonly_fields = (
+        "id",
+        "quantity",
+        "reserved_quantity",
+        "available_quantity_display",
+        "created_at",
+        "updated_at",
+    )
+
+    @admin.display(
+        description="Available quantity",
+    )
+    def available_quantity_display(self, obj: Stock) -> int:
+        return obj.available_quantity
