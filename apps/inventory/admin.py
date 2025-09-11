@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Product, Stock, StockMovement, Warehouse
+from .models import Product, Stock, StockMovement, Warehouse, Reservation
 
 
 @admin.register(Product)
@@ -137,6 +137,60 @@ class StockMovementAdmin(admin.ModelAdmin):
         "external_reference",
         "metadata",
         "created_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(Reservation)
+class ReservationAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "external_reference",
+        "product",
+        "warehouse",
+        "quantity",
+        "status",
+        "expires_at",
+        "created_at",
+    )
+
+    list_filter = (
+        "status",
+        "warehouse",
+        "created_at",
+    )
+
+    search_fields = (
+        "external_reference",
+        "idempotency_key",
+        "product__sku",
+        "warehouse__code",
+    )
+
+    list_select_related = (
+        "product",
+        "warehouse",
+    )
+
+    readonly_fields = (
+        "id",
+        "product",
+        "warehouse",
+        "quantity",
+        "status",
+        "external_reference",
+        "idempotency_key",
+        "expires_at",
+        "confirmed_at",
+        "cancelled_at",
+        "expired_at",
+        "created_at",
+        "updated_at",
     )
 
     def has_add_permission(self, request):

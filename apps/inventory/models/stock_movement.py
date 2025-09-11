@@ -39,6 +39,14 @@ class StockMovement(models.Model):
         related_name="movements",
     )
 
+    reservation = models.ForeignKey(
+        "inventory.Reservation",
+        on_delete=models.PROTECT,
+        related_name="stock_movements",
+        null=True,
+        blank=True,
+    )
+
     movement_type = models.CharField(
         max_length=32,
         choices=MovementType.choices,
