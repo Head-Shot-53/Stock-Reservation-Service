@@ -8,11 +8,15 @@ from apps.inventory.exceptions import (
     IdempotencyConflictError,
     InsufficientAvailableStockError,
     InvalidReservationQuantityError,
+    InvalidReservationStateError,
     InvalidReservationTTLError,
     ProductInactiveError,
+    ReservationExpiredError,
+    ReservationNotFoundError,
     StockNotFoundError,
     WarehouseInactiveError,
 )
+
 from apps.inventory.models import (
     Reservation,
     Stock,
@@ -180,3 +184,181 @@ class ReservationService:
                 )
 
             return existing_reservation
+
+    @staticmethod
+    def _get_locked_reservation(*,reservation_id: uuid.UUID,) -> Reservation:
+        try:
+            return (
+                Reservation.objects
+                .select_for_update()
+                .select_related(
+                    "product",
+                    "warehouse",
+                )
+                .get(id=reservation_id)
+            )
+        except Reservation.DoesNotExist as exc:
+            raise ReservationNotFoundError(
+                f"Reservation {reservation_id} does not exist."
+            ) from exc
+
+
+    @staticmethod
+    def _get_locked_stock_for_reservation(*,reservation: Reservation) -> Stock:
+        try:
+            return (
+                Stock.objects
+                .select_for_update()
+                .select_related(
+                    "product",
+                    "warehouse",
+                )
+                .get(
+                    product_id=reservation.product_id,
+                    warehouse_id=reservation.warehouse_id,
+                )
+            )
+        except Stock.DoesNotExist as exc:
+            raise StockNotFoundError(
+                "Stock associated with the reservation does not exist."
+            ) from exc
+
+    @classmethod
+    def confirm_reservation(cls,*,reservation_id: uuid.UUID) -> Reservation:
+        with transaction.atomic():
+            reservation = cls._get_locked_reservation(
+                reservation_id=reservation_id,
+            )
+
+            if reservation.status == Reservation.Status.CONFIRMED:
+                return reservation
+
+            if reservation.status == Reservation.Status.EXPIRED:
+                raise ReservationExpiredError(
+                    "Expired reservation cannot be confirmed."
+                )
+
+            if reservation.status != Reservation.Status.ACTIVE:
+                raise InvalidReservationStateError(
+                    f"Reservation in status "
+                    f"{reservation.status} cannot be confirmed."
+                )
+
+            if reservation.expires_at <= timezone.now():
+                raise ReservationExpiredError(
+                    "Reservation has already expired."
+                )
+
+            stock = cls._get_locked_stock_for_reservation(
+                reservation=reservation,
+            )
+
+            quantity_before = stock.quantity
+            reserved_before = stock.reserved_quantity
+
+            stock.quantity -= reservation.quantity
+            stock.reserved_quantity -= reservation.quantity
+
+            stock.save(
+                update_fields=(
+                    "quantity",
+                    "reserved_quantity",
+                    "updated_at",
+                )
+            )
+
+            reservation.status = Reservation.Status.CONFIRMED
+            reservation.confirmed_at = timezone.now()
+
+            reservation.save(
+                update_fields=(
+                    "status",
+                    "confirmed_at",
+                    "updated_at",
+                )
+            )
+
+            StockMovement.objects.create(
+                stock=stock,
+                reservation=reservation,
+                movement_type=(
+                    StockMovement.MovementType.RESERVATION_CONFIRMED
+                ),
+                quantity=reservation.quantity,
+                quantity_before=quantity_before,
+                quantity_after=stock.quantity,
+                reserved_before=reserved_before,
+                reserved_after=stock.reserved_quantity,
+                external_reference=reservation.external_reference,
+            )
+
+            return reservation
+
+    @classmethod
+    def cancel_reservation(cls,*,reservation_id: uuid.UUID) -> Reservation:
+        with transaction.atomic():
+            reservation = cls._get_locked_reservation(
+                reservation_id=reservation_id,
+            )
+
+            if reservation.status == Reservation.Status.CANCELLED:
+                return reservation
+
+            if reservation.status == Reservation.Status.EXPIRED:
+                raise InvalidReservationStateError(
+                    "Expired reservation cannot be cancelled."
+                )
+
+            if reservation.status != Reservation.Status.ACTIVE:
+                raise InvalidReservationStateError(
+                    f"Reservation in status "
+                    f"{reservation.status} cannot be cancelled."
+                )
+
+            if reservation.expires_at <= timezone.now():
+                raise ReservationExpiredError(
+                    "Reservation has already expired."
+                )
+
+            stock = cls._get_locked_stock_for_reservation(
+                reservation=reservation,
+            )
+
+            quantity_before = stock.quantity
+            reserved_before = stock.reserved_quantity
+
+            stock.reserved_quantity -= reservation.quantity
+
+            stock.save(
+                update_fields=(
+                    "reserved_quantity",
+                    "updated_at",
+                )
+            )
+
+            reservation.status = Reservation.Status.CANCELLED
+            reservation.cancelled_at = timezone.now()
+
+            reservation.save(
+                update_fields=(
+                    "status",
+                    "cancelled_at",
+                    "updated_at",
+                )
+            )
+
+            StockMovement.objects.create(
+                stock=stock,
+                reservation=reservation,
+                movement_type=(
+                    StockMovement.MovementType.RESERVATION_CANCELLED
+                ),
+                quantity=reservation.quantity,
+                quantity_before=quantity_before,
+                quantity_after=stock.quantity,
+                reserved_before=reserved_before,
+                reserved_after=stock.reserved_quantity,
+                external_reference=reservation.external_reference,
+            )
+
+            return reservation
