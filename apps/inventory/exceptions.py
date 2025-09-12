@@ -43,3 +43,7 @@ class InvalidReservationStateError(InventoryError):
 
 class ReservationExpiredError(InventoryError):
     """Raised when an expired reservation cannot be processed."""
+
+
+class ReservationNotExpiredError(InventoryError):
+    """Raised when attempting to expire a reservation before its deadline."""
