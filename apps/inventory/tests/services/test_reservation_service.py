@@ -15,7 +15,8 @@ from apps.inventory.exceptions import (
     WarehouseInactiveError,
     InvalidReservationStateError,
     ReservationExpiredError,
-    ReservationNotFoundError
+    ReservationNotFoundError,
+    ReservationNotExpiredError
 )
 from apps.inventory.models import (
     Reservation,
@@ -528,5 +529,184 @@ def test_cancel_nonexistent_reservation_raises_error():
         ReservationNotFoundError
     ):
         ReservationService.cancel_reservation(
+            reservation_id=uuid.uuid4(),
+        )
+
+def test_expire_reservation_releases_stock():
+    stock, reservation = create_active_reservation(
+        quantity=3,
+        stock_quantity=10,
+    )
+
+    Reservation.objects.filter(
+        id=reservation.id,
+    ).update(
+        expires_at=timezone.now() - timedelta(seconds=1),
+    )
+
+    reservation = ReservationService.expire_reservation(
+        reservation_id=reservation.id,
+    )
+
+    stock.refresh_from_db()
+    reservation.refresh_from_db()
+
+    assert reservation.status == Reservation.Status.EXPIRED
+    assert reservation.expired_at is not None
+
+    assert stock.quantity == 10
+    assert stock.reserved_quantity == 0
+    assert stock.available_quantity == 10
+
+def test_expire_reservation_creates_stock_movement():
+    stock, reservation = create_active_reservation(
+        quantity=3,
+        stock_quantity=10,
+    )
+
+    Reservation.objects.filter(
+        id=reservation.id,
+    ).update(
+        expires_at=timezone.now() - timedelta(seconds=1),
+    )
+
+    ReservationService.expire_reservation(
+        reservation_id=reservation.id,
+    )
+
+    movement = StockMovement.objects.get(
+        reservation=reservation,
+        movement_type=(
+            StockMovement.MovementType.RESERVATION_EXPIRED
+        ),
+    )
+
+    assert movement.quantity == 3
+
+    assert movement.quantity_before == 10
+    assert movement.quantity_after == 10
+
+    assert movement.reserved_before == 3
+    assert movement.reserved_after == 0
+
+def test_expire_reservation_is_idempotent():
+    stock, reservation = create_active_reservation(
+        quantity=3,
+        stock_quantity=10,
+    )
+
+    Reservation.objects.filter(
+        id=reservation.id,
+    ).update(
+        expires_at=timezone.now() - timedelta(seconds=1),
+    )
+
+    first = ReservationService.expire_reservation(
+        reservation_id=reservation.id,
+    )
+
+    second = ReservationService.expire_reservation(
+        reservation_id=reservation.id,
+    )
+
+    stock.refresh_from_db()
+
+    assert first.id == second.id
+
+    assert stock.quantity == 10
+    assert stock.reserved_quantity == 0
+
+    assert StockMovement.objects.filter(
+        reservation=reservation,
+        movement_type=(
+            StockMovement.MovementType.RESERVATION_EXPIRED
+        ),
+    ).count() == 1
+
+def test_active_reservation_cannot_expire_before_deadline():
+    stock, reservation = create_active_reservation(
+        quantity=3,
+        stock_quantity=10,
+    )
+
+    with pytest.raises(
+        ReservationNotExpiredError
+    ):
+        ReservationService.expire_reservation(
+            reservation_id=reservation.id,
+        )
+
+    stock.refresh_from_db()
+    reservation.refresh_from_db()
+
+    assert reservation.status == Reservation.Status.ACTIVE
+
+    assert stock.quantity == 10
+    assert stock.reserved_quantity == 3
+
+def test_confirmed_reservation_cannot_be_expired():
+    _, reservation = create_active_reservation()
+
+    ReservationService.confirm_reservation(
+        reservation_id=reservation.id,
+    )
+
+    with pytest.raises(
+        InvalidReservationStateError
+    ):
+        ReservationService.expire_reservation(
+            reservation_id=reservation.id,
+        )
+
+def test_cancelled_reservation_cannot_be_expired():
+    _, reservation = create_active_reservation()
+
+    ReservationService.cancel_reservation(
+        reservation_id=reservation.id,
+    )
+
+    with pytest.raises(
+        InvalidReservationStateError
+    ):
+        ReservationService.expire_reservation(
+            reservation_id=reservation.id,
+        )
+
+def test_expiration_is_rolled_back_when_movement_creation_fails():
+    stock, reservation = create_active_reservation(
+        quantity=3,
+        stock_quantity=10,
+    )
+
+    Reservation.objects.filter(
+        id=reservation.id,
+    ).update(
+        expires_at=timezone.now() - timedelta(seconds=1),
+    )
+
+    with patch.object(
+        StockMovement.objects,
+        "create",
+        side_effect=RuntimeError("Movement creation failed"),
+    ):
+        with pytest.raises(RuntimeError):
+            ReservationService.expire_reservation(
+                reservation_id=reservation.id,
+            )
+
+    stock.refresh_from_db()
+    reservation.refresh_from_db()
+
+    assert stock.quantity == 10
+    assert stock.reserved_quantity == 3
+
+    assert reservation.status == Reservation.Status.ACTIVE
+    assert reservation.expired_at is None
+
+def test_expire_nonexistent_reservation_raises_error():
+    with pytest.raises(
+        ReservationNotFoundError
+    ):
+        ReservationService.expire_reservation(
             reservation_id=uuid.uuid4(),
         )
