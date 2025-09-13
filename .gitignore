@@ -41,3 +41,8 @@ Thumbs.db
 
 # Docker
 docker-data/
+
+# Celery
+celerybeat-schedule
+celerybeat-schedule.*
+*.pid
