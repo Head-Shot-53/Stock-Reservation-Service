@@ -13,40 +13,39 @@ from .serializers import (
     AvailabilitySerializer,
     CreateReservationSerializer,
     ReservationSerializer,
+    ReservationListQuerySerializer
 )
+
+from apps.inventory.selectors import (
+    get_reservation,
+    get_stock,
+    list_reservations,
+)
+
+from .pagination import ReservationPagination
 
 class AvailabilityView(APIView):
     def get(self, request):
         query_serializer = AvailabilityQuerySerializer(
             data=request.query_params,
         )
+
         query_serializer.is_valid(
             raise_exception=True,
         )
 
-        product_id = query_serializer.validated_data[
-            "product_id"
-        ]
-        warehouse_id = query_serializer.validated_data[
-            "warehouse_id"
-        ]
-
         try:
-            stock = (
-                Stock.objects
-                .select_related(
-                    "product",
-                    "warehouse",
-                )
-                .get(
-                    product_id=product_id,
-                    warehouse_id=warehouse_id,
-                )
+            stock = get_stock(
+                product_id=query_serializer.validated_data[
+                    "product_id"
+                ],
+                warehouse_id=query_serializer.validated_data[
+                    "warehouse_id"
+                ],
             )
-        except Stock.DoesNotExist as exc:
-            raise NotFound(
-                "Stock for the requested product and warehouse does not exist."
-            ) from exc
+
+        except InventoryError as exc:
+            raise_inventory_api_exception(exc)
 
         serializer = AvailabilitySerializer(
             {
@@ -64,7 +63,7 @@ class AvailabilityView(APIView):
         )
 
 
-class ReservationCreateView(APIView):
+class ReservationListCreateView(APIView):
     def post(self, request):
         serializer = CreateReservationSerializer(
             data=request.data,
@@ -121,22 +120,46 @@ class ReservationCreateView(APIView):
             status=status.HTTP_201_CREATED,
         )
 
+    def get(self, request):
+        query_serializer = ReservationListQuerySerializer(
+            data=request.query_params,
+        )
+
+        query_serializer.is_valid(
+            raise_exception=True,
+        )
+
+        reservations = list_reservations(
+            **query_serializer.validated_data,
+        )
+
+        paginator = ReservationPagination()
+
+        page = paginator.paginate_queryset(
+            reservations,
+            request,
+            view=self,
+        )
+
+        serializer = ReservationSerializer(
+            page,
+            many=True,
+        )
+
+        return paginator.get_paginated_response(
+            serializer.data,
+        )
+
 
 class ReservationDetailView(APIView):
-    def get(self, request, reservation_id):
+    def get(self,request,reservation_id):
         try:
-            reservation = (
-                Reservation.objects
-                .select_related(
-                    "product",
-                    "warehouse",
-                )
-                .get(id=reservation_id)
+            reservation = get_reservation(
+                reservation_id=reservation_id,
             )
-        except Reservation.DoesNotExist as exc:
-            raise NotFound(
-                "Reservation does not exist."
-            ) from exc
+
+        except InventoryError as exc:
+            raise_inventory_api_exception(exc)
 
         serializer = ReservationSerializer(
             reservation,

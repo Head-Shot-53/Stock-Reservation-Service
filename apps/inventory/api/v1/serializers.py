@@ -7,7 +7,18 @@ class ReservationSerializer(serializers.ModelSerializer):
     product_id = serializers.UUIDField(
         read_only=True,
     )
+
     warehouse_id = serializers.UUIDField(
+        read_only=True,
+    )
+
+    product_sku = serializers.CharField(
+    source="product.sku",
+    read_only=True,
+    )
+
+    warehouse_code = serializers.CharField(
+        source="warehouse.code",
         read_only=True,
     )
 
@@ -17,7 +28,9 @@ class ReservationSerializer(serializers.ModelSerializer):
             "id",
             "external_reference",
             "product_id",
+            "product_sku",
             "warehouse_id",
+            "warehouse_code",
             "quantity",
             "status",
             "expires_at",
@@ -61,3 +74,23 @@ class AvailabilitySerializer(serializers.Serializer):
     quantity = serializers.IntegerField()
     reserved_quantity = serializers.IntegerField()
     available_quantity = serializers.IntegerField()
+
+
+class ReservationListQuerySerializer(serializers.Serializer):
+    status = serializers.ChoiceField(
+        choices=Reservation.Status.choices,
+        required=False,
+    )
+
+    product_id = serializers.UUIDField(
+        required=False,
+    )
+
+    warehouse_id = serializers.UUIDField(
+        required=False,
+    )
+
+    external_reference = serializers.CharField(
+        max_length=255,
+        required=False,
+    )

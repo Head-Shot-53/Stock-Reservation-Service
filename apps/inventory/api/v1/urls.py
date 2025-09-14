@@ -4,7 +4,7 @@ from .views import (
     AvailabilityView,
     ReservationCancelView,
     ReservationConfirmView,
-    ReservationCreateView,
+    ReservationListCreateView,
     ReservationDetailView,
 )
 
@@ -20,8 +20,8 @@ urlpatterns = [
     ),
     path(
         "reservations/",
-        ReservationCreateView.as_view(),
-        name="reservation-create",
+        ReservationListCreateView.as_view(),
+        name="reservation-list-create",
     ),
     path(
         "reservations/<uuid:reservation_id>/",
