@@ -24,6 +24,7 @@ services:
       retries: 5
       start_period: 10s
 
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -45,12 +46,39 @@ services:
       timeout: 3s
       retries: 5
 
+
+  migrate:
+    build:
+      context: .
+
+    command:
+      python manage.py migrate --noinput
+
+    env_file:
+      - .env
+
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      DJANGO_DEBUG: "False"
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+    restart: "no"
+
+
   celery_worker:
     build:
       context: .
 
     command:
       celery -A config worker -l INFO
+
+    restart: unless-stopped
 
     env_file:
       - .env
@@ -61,14 +89,12 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
 
-    volumes:
-      - .:/app
-
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
+
 
   celery_beat:
     build:
@@ -77,6 +103,8 @@ services:
     command:
       celery -A config beat -l INFO -s /tmp/celerybeat-schedule
 
+    restart: unless-stopped
+
     env_file:
       - .env
 
@@ -86,14 +114,55 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
 
-    volumes:
-      - .:/app
-
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
+
+
+  web:
+    build:
+      context: .
+
+    command:
+      gunicorn config.wsgi:application --config gunicorn.conf.py
+
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      DJANGO_DEBUG: "False"
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,web
+
+    ports:
+      - "8000:8000"
+
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/', timeout=2)",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
 
 volumes:
   postgres_data:
