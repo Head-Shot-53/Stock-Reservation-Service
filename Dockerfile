@@ -10,15 +10,18 @@ COPY requirements ./requirements
 RUN python -m pip install --upgrade pip \
     && python -m pip install \
         --no-cache-dir \
-        -r requirements/development.txt
+        -r requirements/production.txt
 
 RUN useradd \
     --create-home \
+    --uid 10001 \
     --shell /bin/bash \
     appuser
 
-COPY . .
-
-RUN chown -R appuser:appuser /app
+COPY --chown=appuser:appuser . .
 
 USER appuser
+
+EXPOSE 8000
+
+CMD ["gunicorn", "config.wsgi:application", "--config", "gunicorn.conf.py"]
