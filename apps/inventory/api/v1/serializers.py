@@ -94,3 +94,29 @@ class ReservationListQuerySerializer(serializers.Serializer):
         max_length=255,
         required=False,
     )
+
+
+class ErrorDetailSerializer(serializers.Serializer):
+    code = serializers.CharField()
+    message = serializers.CharField()
+    details = serializers.JSONField()
+
+
+class ErrorResponseSerializer(serializers.Serializer):
+    error = ErrorDetailSerializer()
+
+
+class PaginatedReservationListSerializer(serializers.Serializer):
+    count = serializers.IntegerField()
+
+    next = serializers.URLField(
+        allow_null=True,
+    )
+
+    previous = serializers.URLField(
+        allow_null=True,
+    )
+
+    results = ReservationSerializer(
+        many=True,
+    )
