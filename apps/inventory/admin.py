@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Product, Warehouse, Stock
+from .models import Product, Stock, StockMovement, Warehouse
 
 
 @admin.register(Product)
@@ -95,3 +95,52 @@ class StockAdmin(admin.ModelAdmin):
     )
     def available_quantity_display(self, obj: Stock) -> int:
         return obj.available_quantity
+
+
+@admin.register(StockMovement)
+class StockMovementAdmin(admin.ModelAdmin):
+    list_display = (
+        "movement_type",
+        "stock",
+        "quantity",
+        "quantity_before",
+        "quantity_after",
+        "created_at",
+    )
+
+    list_filter = (
+        "movement_type",
+        "created_at",
+    )
+
+    search_fields = (
+        "stock__product__sku",
+        "stock__warehouse__code",
+        "external_reference",
+    )
+
+    list_select_related = (
+        "stock",
+        "stock__product",
+        "stock__warehouse",
+    )
+
+    readonly_fields = (
+        "id",
+        "stock",
+        "movement_type",
+        "quantity",
+        "quantity_before",
+        "quantity_after",
+        "reserved_before",
+        "reserved_after",
+        "external_reference",
+        "metadata",
+        "created_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
