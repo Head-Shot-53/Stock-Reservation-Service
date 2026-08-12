@@ -1,6 +1,6 @@
 import factory
 
-from apps.inventory.models import Product, Warehouse
+from apps.inventory.models import Product, Warehouse, Stock
 
 class ProductFactory(factory.django.DjangoModelFactory):
     class Meta:
@@ -24,3 +24,13 @@ class WarehouseFactory(factory.django.DjangoModelFactory):
 
     address = ""
     is_active = True
+
+
+class StockFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = Stock
+
+    product = factory.SubFactory(ProductFactory)
+    warehouse = factory.SubFactory(WarehouseFactory)
+    quantity = 0
+    reserved_quantity = 0
