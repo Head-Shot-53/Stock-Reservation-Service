@@ -1,6 +1,9 @@
 import factory
 
-from apps.inventory.models import Product, Warehouse, Stock
+from apps.inventory.models import Product, Warehouse, Stock, Reservation
+
+from datetime import timedelta
+from django.utils import timezone
 
 class ProductFactory(factory.django.DjangoModelFactory):
     class Meta:
@@ -34,3 +37,27 @@ class StockFactory(factory.django.DjangoModelFactory):
     warehouse = factory.SubFactory(WarehouseFactory)
     quantity = 0
     reserved_quantity = 0
+
+
+class ReservationFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = Reservation
+
+    product = factory.SubFactory(ProductFactory)
+    warehouse = factory.SubFactory(WarehouseFactory)
+
+    quantity = 1
+
+    status = Reservation.Status.ACTIVE
+
+    external_reference = factory.Sequence(
+        lambda number: f"ORDER-{number:05d}"
+    )
+
+    idempotency_key = factory.Sequence(
+        lambda number: f"IDEMPOTENCY-{number:05d}"
+    )
+
+    expires_at = factory.LazyFunction(
+        lambda: timezone.now() + timedelta(minutes=15)
+    )
