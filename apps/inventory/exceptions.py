@@ -31,3 +31,15 @@ class WarehouseInactiveError(InventoryError):
 
 class IdempotencyConflictError(InventoryError):
     """Raised when an idempotency key is reused with different data."""
+
+
+class ReservationNotFoundError(InventoryError):
+    """Raised when the requested reservation does not exist."""
+
+
+class InvalidReservationStateError(InventoryError):
+    """Raised when a reservation transition is not allowed."""
+
+
+class ReservationExpiredError(InventoryError):
+    """Raised when an expired reservation cannot be processed."""
