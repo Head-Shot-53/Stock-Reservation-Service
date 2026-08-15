@@ -15,6 +15,7 @@ from apps.inventory.exceptions import (
     ReservationNotFoundError,
     StockNotFoundError,
     WarehouseInactiveError,
+    ReservationNotExpiredError,
 )
 
 from apps.inventory.models import (
@@ -190,7 +191,7 @@ class ReservationService:
         try:
             return (
                 Reservation.objects
-                .select_for_update()
+                .select_for_update(of=("self",))
                 .select_related(
                     "product",
                     "warehouse",
@@ -208,7 +209,7 @@ class ReservationService:
         try:
             return (
                 Stock.objects
-                .select_for_update()
+                .select_for_update(of=("self",))
                 .select_related(
                     "product",
                     "warehouse",
@@ -352,6 +353,72 @@ class ReservationService:
                 reservation=reservation,
                 movement_type=(
                     StockMovement.MovementType.RESERVATION_CANCELLED
+                ),
+                quantity=reservation.quantity,
+                quantity_before=quantity_before,
+                quantity_after=stock.quantity,
+                reserved_before=reserved_before,
+                reserved_after=stock.reserved_quantity,
+                external_reference=reservation.external_reference,
+            )
+
+            return reservation
+
+    @classmethod
+    def expire_reservation(cls,*,reservation_id: uuid.UUID) -> Reservation:
+        with transaction.atomic():
+            reservation = cls._get_locked_reservation(
+                reservation_id=reservation_id,
+            )
+
+            if reservation.status == Reservation.Status.EXPIRED:
+                return reservation
+
+            if reservation.status != Reservation.Status.ACTIVE:
+                raise InvalidReservationStateError(
+                    f"Reservation in status "
+                    f"{reservation.status} cannot be expired."
+                )
+
+            now = timezone.now()
+
+            if reservation.expires_at > now:
+                raise ReservationNotExpiredError(
+                    "Reservation has not expired yet."
+                )
+
+            stock = cls._get_locked_stock_for_reservation(
+                reservation=reservation,
+            )
+
+            quantity_before = stock.quantity
+            reserved_before = stock.reserved_quantity
+
+            stock.reserved_quantity -= reservation.quantity
+
+            stock.save(
+                update_fields=(
+                    "reserved_quantity",
+                    "updated_at",
+                )
+            )
+
+            reservation.status = Reservation.Status.EXPIRED
+            reservation.expired_at = now
+
+            reservation.save(
+                update_fields=(
+                    "status",
+                    "expired_at",
+                    "updated_at",
+                )
+            )
+
+            StockMovement.objects.create(
+                stock=stock,
+                reservation=reservation,
+                movement_type=(
+                    StockMovement.MovementType.RESERVATION_EXPIRED
                 ),
                 quantity=reservation.quantity,
                 quantity_before=quantity_before,
