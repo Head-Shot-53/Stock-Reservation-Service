@@ -167,3 +167,11 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": 60.0,
     },
 }
+
+#REST Framework
+REST_FRAMEWORK = {
+    "EXCEPTION_HANDLER": (
+        "apps.inventory.api.exception_handler."
+        "api_exception_handler"
+    ),
+}
