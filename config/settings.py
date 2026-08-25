@@ -47,6 +47,8 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
 
     "rest_framework",
+    "drf_spectacular",
+
     "apps.inventory.apps.InventoryConfig",
 ]
 
@@ -170,8 +172,22 @@ CELERY_BEAT_SCHEDULE = {
 
 #REST Framework
 REST_FRAMEWORK = {
+    "DEFAULT_SCHEMA_CLASS": (
+        "drf_spectacular.openapi.AutoSchema"
+    ),
     "EXCEPTION_HANDLER": (
         "apps.inventory.api.exception_handler."
         "api_exception_handler"
     ),
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "Stock Reservation Service API",
+    "DESCRIPTION": (
+        "API for warehouse stock reservation, confirmation, "
+        "cancellation and availability management."
+    ),
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "COMPONENT_SPLIT_REQUEST": True,
 }

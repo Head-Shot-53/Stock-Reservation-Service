@@ -1,0 +1,471 @@
+openapi: 3.0.3
+info:
+  title: Stock Reservation Service API
+  version: 1.0.0
+  description: API for warehouse stock reservation, confirmation, cancellation and
+    availability management.
+paths:
+  /api/v1/availability/:
+    get:
+      operationId: stock_availability
+      description: Returns the physical, reserved and available quantity for a product
+        in a warehouse.
+      summary: Get stock availability
+      parameters:
+      - in: query
+        name: product_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      - in: query
+        name: warehouse_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - Inventory
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Availability'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: ''
+  /api/v1/reservations/:
+    get:
+      operationId: reservation_list
+      description: Returns a paginated list of reservations. Results can be filtered
+        by status, product, warehouse and external reference.
+      summary: List reservations
+      parameters:
+      - in: query
+        name: external_reference
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 255
+      - in: query
+        name: page
+        schema:
+          type: integer
+        description: Page number.
+      - in: query
+        name: page_size
+        schema:
+          type: integer
+        description: Number of results per page. Maximum 100.
+      - in: query
+        name: product_id
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: status
+        schema:
+          enum:
+          - ACTIVE
+          - CONFIRMED
+          - CANCELLED
+          - EXPIRED
+          type: string
+          minLength: 1
+        description: |-
+          * `ACTIVE` - Active
+          * `CONFIRMED` - Confirmed
+          * `CANCELLED` - Cancelled
+          * `EXPIRED` - Expired
+      - in: query
+        name: warehouse_id
+        schema:
+          type: string
+          format: uuid
+      tags:
+      - Reservations
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedReservationList'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: ''
+    post:
+      operationId: reservation_create
+      description: Creates a temporary stock reservation. The operation is idempotent
+        when the same Idempotency-Key and payload are used.
+      summary: Create a reservation
+      parameters:
+      - in: header
+        name: Idempotency-Key
+        schema:
+          type: string
+        description: Unique key used to safely retry reservation creation.
+        required: true
+      tags:
+      - Reservations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReservationRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CreateReservationRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CreateReservationRequest'
+        required: true
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Request validation failed.
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Stock for the requested product and warehouse does not exist.
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                InsufficientStock:
+                  value:
+                    error:
+                      code: insufficient_available_stock
+                      message: Not enough available stock.
+                      details: {}
+                  summary: Insufficient stock
+          description: The request conflicts with the current inventory state.
+  /api/v1/reservations/{reservation_id}/:
+    get:
+      operationId: reservation_retrieve
+      description: Returns the current state of a reservation.
+      summary: Get reservation details
+      parameters:
+      - in: path
+        name: reservation_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - Reservations
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: ''
+  /api/v1/reservations/{reservation_id}/cancel/:
+    post:
+      operationId: reservation_cancel
+      description: Cancels an ACTIVE reservation and releases its reserved stock.
+        Repeated cancellation is idempotent.
+      summary: Cancel a reservation
+      parameters:
+      - in: path
+        name: reservation_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - Reservations
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: ''
+  /api/v1/reservations/{reservation_id}/confirm/:
+    post:
+      operationId: reservation_confirm
+      description: Confirms an ACTIVE reservation and permanently deducts the reserved
+        quantity from physical stock. Repeated confirmation is idempotent.
+      summary: Confirm a reservation
+      parameters:
+      - in: path
+        name: reservation_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - Reservations
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: ''
+components:
+  schemas:
+    Availability:
+      type: object
+      properties:
+        product_id:
+          type: string
+          format: uuid
+        warehouse_id:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+        reserved_quantity:
+          type: integer
+        available_quantity:
+          type: integer
+      required:
+      - available_quantity
+      - product_id
+      - quantity
+      - reserved_quantity
+      - warehouse_id
+    CreateReservationRequest:
+      type: object
+      properties:
+        product_id:
+          type: string
+          format: uuid
+        warehouse_id:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          minimum: 1
+        external_reference:
+          type: string
+          minLength: 1
+          maxLength: 255
+        ttl_seconds:
+          type: integer
+          maximum: 86400
+          minimum: 60
+          default: 900
+      required:
+      - external_reference
+      - product_id
+      - quantity
+      - warehouse_id
+    ErrorDetail:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details: {}
+      required:
+      - code
+      - details
+      - message
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorDetail'
+      required:
+      - error
+    PaginatedReservationList:
+      type: object
+      properties:
+        count:
+          type: integer
+        next:
+          type: string
+          format: uri
+          nullable: true
+        previous:
+          type: string
+          format: uri
+          nullable: true
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Reservation'
+      required:
+      - count
+      - next
+      - previous
+      - results
+    Reservation:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        external_reference:
+          type: string
+          readOnly: true
+        product_id:
+          type: string
+          format: uuid
+          readOnly: true
+        product_sku:
+          type: string
+          readOnly: true
+        warehouse_id:
+          type: string
+          format: uuid
+          readOnly: true
+        warehouse_code:
+          type: string
+          readOnly: true
+        quantity:
+          type: integer
+          readOnly: true
+        status:
+          allOf:
+          - $ref: '#/components/schemas/StatusEnum'
+          readOnly: true
+        expires_at:
+          type: string
+          format: date-time
+          readOnly: true
+        confirmed_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        cancelled_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        expired_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - cancelled_at
+      - confirmed_at
+      - created_at
+      - expired_at
+      - expires_at
+      - external_reference
+      - id
+      - product_id
+      - product_sku
+      - quantity
+      - status
+      - updated_at
+      - warehouse_code
+      - warehouse_id
+    StatusEnum:
+      enum:
+      - ACTIVE
+      - CONFIRMED
+      - CANCELLED
+      - EXPIRED
+      type: string
+      description: |-
+        * `ACTIVE` - Active
+        * `CONFIRMED` - Confirmed
+        * `CANCELLED` - Cancelled
+        * `EXPIRED` - Expired
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: sessionid
