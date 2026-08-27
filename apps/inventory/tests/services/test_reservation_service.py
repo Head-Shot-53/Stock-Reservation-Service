@@ -1,0 +1,712 @@
+from datetime import timedelta
+
+import pytest
+from django.utils import timezone
+
+from unittest.mock import patch
+
+import uuid
+
+from apps.inventory.exceptions import (
+    IdempotencyConflictError,
+    InsufficientAvailableStockError,
+    InvalidReservationQuantityError,
+    ProductInactiveError,
+    WarehouseInactiveError,
+    InvalidReservationStateError,
+    ReservationExpiredError,
+    ReservationNotFoundError,
+    ReservationNotExpiredError
+)
+from apps.inventory.models import (
+    Reservation,
+    StockMovement,
+)
+from apps.inventory.services import ReservationService
+from apps.inventory.tests.factories import StockFactory
+
+
+pytestmark = pytest.mark.django_db
+
+def test_create_reservation_creates_active_reservation():
+    stock = StockFactory(
+        quantity=10,
+        reserved_quantity=2,
+    )
+
+    before = timezone.now()
+
+    reservation = ReservationService.create_reservation(
+        product_id=stock.product_id,
+        warehouse_id=stock.warehouse_id,
+        quantity=3,
+        external_reference="ORDER-001",
+        idempotency_key="KEY-001",
+    )
+
+    assert reservation.status == Reservation.Status.ACTIVE
+    assert reservation.quantity == 3
+    assert reservation.product == stock.product
+    assert reservation.warehouse == stock.warehouse
+    assert reservation.external_reference == "ORDER-001"
+
+    assert reservation.expires_at >= (
+        before + timedelta(minutes=15)
+    )
+
+def test_create_reservation_increases_reserved_quantity():
+    stock = StockFactory(
+        quantity=10,
+        reserved_quantity=2,
+    )
+
+    ReservationService.create_reservation(
+        product_id=stock.product_id,
+        warehouse_id=stock.warehouse_id,
+        quantity=3,
+        external_reference="ORDER-001",
+        idempotency_key="KEY-001",
+    )
+
+    stock.refresh_from_db()
+
+    assert stock.quantity == 10
+    assert stock.reserved_quantity == 5
+    assert stock.available_quantity == 5
+
+def test_create_reservation_creates_stock_movement():
+    stock = StockFactory(
+        quantity=10,
+        reserved_quantity=2,
+    )
+
+    reservation = ReservationService.create_reservation(
+        product_id=stock.product_id,
+        warehouse_id=stock.warehouse_id,
+        quantity=3,
+        external_reference="ORDER-001",
+        idempotency_key="KEY-001",
+    )
+
+    movement = StockMovement.objects.get(
+        reservation=reservation,
+    )
+
+    assert movement.movement_type == (
+        StockMovement.MovementType.RESERVATION_CREATED
+    )
+    assert movement.quantity == 3
+
+    assert movement.quantity_before == 10
+    assert movement.quantity_after == 10
+
+    assert movement.reserved_before == 2
+    assert movement.reserved_after == 5
+
+def test_create_reservation_rejects_insufficient_stock():
+    stock = StockFactory(
+        quantity=5,
+        reserved_quantity=4,
+    )
+
+    with pytest.raises(
+        InsufficientAvailableStockError
+    ):
+        ReservationService.create_reservation(
+            product_id=stock.product_id,
+            warehouse_id=stock.warehouse_id,
+            quantity=2,
+            external_reference="ORDER-001",
+            idempotency_key="KEY-001",
+        )
+
+    stock.refresh_from_db()
+
+    assert stock.quantity == 5
+    assert stock.reserved_quantity == 4
+
+    assert Reservation.objects.count() == 0
+    assert StockMovement.objects.count() == 0
+
+def test_create_reservation_rejects_inactive_product():
+    stock = StockFactory(
+        quantity=10,
+    )
+
+    stock.product.is_active = False
+    stock.product.save(
+        update_fields=("is_active",)
+    )
+
+    with pytest.raises(ProductInactiveError):
+        ReservationService.create_reservation(
+            product_id=stock.product_id,
+            warehouse_id=stock.warehouse_id,
+            quantity=1,
+            external_reference="ORDER-001",
+            idempotency_key="KEY-001",
+        )
+
+def test_create_reservation_rejects_inactive_warehouse():
+    stock = StockFactory(
+        quantity=10,
+    )
+
+    stock.warehouse.is_active = False
+    stock.warehouse.save(
+        update_fields=("is_active",)
+    )
+
+    with pytest.raises(WarehouseInactiveError):
+        ReservationService.create_reservation(
+            product_id=stock.product_id,
+            warehouse_id=stock.warehouse_id,
+            quantity=1,
+            external_reference="ORDER-001",
+            idempotency_key="KEY-001",
+        )
+
+
+@pytest.mark.parametrize("quantity",[0, -1, -10,],)
+def test_create_reservation_rejects_invalid_quantity(quantity,):
+    stock = StockFactory(quantity=10,)
+
+    with pytest.raises(
+        InvalidReservationQuantityError
+    ):
+        ReservationService.create_reservation(
+            product_id=stock.product_id,
+            warehouse_id=stock.warehouse_id,
+            quantity=quantity,
+            external_reference="ORDER-001",
+            idempotency_key="KEY-001",
+        )
+
+def test_repeated_idempotent_request_does_not_reserve_twice():
+    stock = StockFactory(
+        quantity=10,
+        reserved_quantity=0,
+    )
+
+    first = ReservationService.create_reservation(
+        product_id=stock.product_id,
+        warehouse_id=stock.warehouse_id,
+        quantity=3,
+        external_reference="ORDER-001",
+        idempotency_key="KEY-001",
+    )
+
+    second = ReservationService.create_reservation(
+        product_id=stock.product_id,
+        warehouse_id=stock.warehouse_id,
+        quantity=3,
+        external_reference="ORDER-001",
+        idempotency_key="KEY-001",
+    )
+
+    stock.refresh_from_db()
+
+    assert first.id == second.id
+
+    assert stock.reserved_quantity == 3
+
+    assert Reservation.objects.count() == 1
+
+    assert StockMovement.objects.filter(
+        movement_type=(
+            StockMovement.MovementType.RESERVATION_CREATED
+        )
+    ).count() == 1
+
+def test_idempotency_key_cannot_be_reused_for_different_request():
+    stock = StockFactory(
+        quantity=10,
+    )
+
+    ReservationService.create_reservation(
+        product_id=stock.product_id,
+        warehouse_id=stock.warehouse_id,
+        quantity=2,
+        external_reference="ORDER-001",
+        idempotency_key="KEY-001",
+    )
+
+    with pytest.raises(IdempotencyConflictError):
+        ReservationService.create_reservation(
+            product_id=stock.product_id,
+            warehouse_id=stock.warehouse_id,
+            quantity=3,
+            external_reference="ORDER-001",
+            idempotency_key="KEY-001",
+        )
+
+    stock.refresh_from_db()
+
+    assert stock.reserved_quantity == 2
+
+def create_active_reservation(*,quantity=3,stock_quantity=10):
+    stock = StockFactory(
+        quantity=stock_quantity,
+        reserved_quantity=0,
+    )
+
+    reservation = ReservationService.create_reservation(
+        product_id=stock.product_id,
+        warehouse_id=stock.warehouse_id,
+        quantity=quantity,
+        external_reference="ORDER-001",
+        idempotency_key="KEY-001",
+    )
+
+    return stock, reservation
+
+def test_confirm_reservation_changes_state_and_stock():
+    stock, reservation = create_active_reservation(
+        quantity=3,
+        stock_quantity=10,
+    )
+
+    reservation = ReservationService.confirm_reservation(
+        reservation_id=reservation.id,
+    )
+
+    stock.refresh_from_db()
+    reservation.refresh_from_db()
+
+    assert reservation.status == Reservation.Status.CONFIRMED
+    assert reservation.confirmed_at is not None
+
+    assert stock.quantity == 7
+    assert stock.reserved_quantity == 0
+    assert stock.available_quantity == 7
+
+def test_confirm_reservation_creates_stock_movement():
+    stock, reservation = create_active_reservation(
+        quantity=3,
+        stock_quantity=10,
+    )
+
+    ReservationService.confirm_reservation(
+        reservation_id=reservation.id,
+    )
+
+    movement = StockMovement.objects.get(
+        reservation=reservation,
+        movement_type=(
+            StockMovement.MovementType.RESERVATION_CONFIRMED
+        ),
+    )
+
+    assert movement.quantity == 3
+
+    assert movement.quantity_before == 10
+    assert movement.quantity_after == 7
+
+    assert movement.reserved_before == 3
+    assert movement.reserved_after == 0
+
+def test_confirm_reservation_is_idempotent():
+    stock, reservation = create_active_reservation(
+        quantity=3,
+        stock_quantity=10,
+    )
+
+    first = ReservationService.confirm_reservation(
+        reservation_id=reservation.id,
+    )
+
+    second = ReservationService.confirm_reservation(
+        reservation_id=reservation.id,
+    )
+
+    stock.refresh_from_db()
+
+    assert first.id == second.id
+
+    assert stock.quantity == 7
+    assert stock.reserved_quantity == 0
+
+    assert StockMovement.objects.filter(
+        reservation=reservation,
+        movement_type=(
+            StockMovement.MovementType.RESERVATION_CONFIRMED
+        ),
+    ).count() == 1
+
+def test_cancelled_reservation_cannot_be_confirmed():
+    _, reservation = create_active_reservation()
+
+    ReservationService.cancel_reservation(
+        reservation_id=reservation.id,
+    )
+
+    with pytest.raises(
+        InvalidReservationStateError
+    ):
+        ReservationService.confirm_reservation(
+            reservation_id=reservation.id,
+        )
+
+def test_cancel_reservation_releases_stock():
+    stock, reservation = create_active_reservation(
+        quantity=3,
+        stock_quantity=10,
+    )
+
+    reservation = ReservationService.cancel_reservation(
+        reservation_id=reservation.id,
+    )
+
+    stock.refresh_from_db()
+    reservation.refresh_from_db()
+
+    assert reservation.status == Reservation.Status.CANCELLED
+    assert reservation.cancelled_at is not None
+
+    assert stock.quantity == 10
+    assert stock.reserved_quantity == 0
+    assert stock.available_quantity == 10
+
+def test_cancel_reservation_creates_stock_movement():
+    stock, reservation = create_active_reservation(
+        quantity=3,
+        stock_quantity=10,
+    )
+
+    ReservationService.cancel_reservation(
+        reservation_id=reservation.id,
+    )
+
+    movement = StockMovement.objects.get(
+        reservation=reservation,
+        movement_type=(
+            StockMovement.MovementType.RESERVATION_CANCELLED
+        ),
+    )
+
+    assert movement.quantity == 3
+
+    assert movement.quantity_before == 10
+    assert movement.quantity_after == 10
+
+    assert movement.reserved_before == 3
+    assert movement.reserved_after == 0
+
+def test_cancel_reservation_is_idempotent():
+    stock, reservation = create_active_reservation(
+        quantity=3,
+        stock_quantity=10,
+    )
+
+    first = ReservationService.cancel_reservation(
+        reservation_id=reservation.id,
+    )
+
+    second = ReservationService.cancel_reservation(
+        reservation_id=reservation.id,
+    )
+
+    stock.refresh_from_db()
+
+    assert first.id == second.id
+
+    assert stock.quantity == 10
+    assert stock.reserved_quantity == 0
+
+    assert StockMovement.objects.filter(
+        reservation=reservation,
+        movement_type=(
+            StockMovement.MovementType.RESERVATION_CANCELLED
+        ),
+    ).count() == 1
+
+def test_confirmed_reservation_cannot_be_cancelled():
+    _, reservation = create_active_reservation()
+
+    ReservationService.confirm_reservation(
+        reservation_id=reservation.id,
+    )
+
+    with pytest.raises(
+        InvalidReservationStateError
+    ):
+        ReservationService.cancel_reservation(
+            reservation_id=reservation.id,
+        )
+
+def test_expired_active_reservation_cannot_be_confirmed():
+    _, reservation = create_active_reservation()
+
+    Reservation.objects.filter(
+        id=reservation.id,
+    ).update(
+        expires_at=timezone.now() - timedelta(seconds=1),
+    )
+
+    with pytest.raises(
+        ReservationExpiredError
+    ):
+        ReservationService.confirm_reservation(
+            reservation_id=reservation.id,
+        )
+
+def test_expired_active_reservation_cannot_be_cancelled():
+    _, reservation = create_active_reservation()
+
+    Reservation.objects.filter(
+        id=reservation.id,
+    ).update(
+        expires_at=timezone.now() - timedelta(seconds=1),
+    )
+
+    with pytest.raises(
+        ReservationExpiredError
+    ):
+        ReservationService.cancel_reservation(
+            reservation_id=reservation.id,
+        )
+
+def test_confirm_is_rolled_back_when_movement_creation_fails():
+    stock, reservation = create_active_reservation(
+        quantity=3,
+        stock_quantity=10,
+    )
+
+    with patch.object(
+        StockMovement.objects,
+        "create",
+        side_effect=RuntimeError("Movement creation failed"),
+    ):
+        with pytest.raises(RuntimeError):
+            ReservationService.confirm_reservation(
+                reservation_id=reservation.id,
+            )
+
+    stock.refresh_from_db()
+    reservation.refresh_from_db()
+
+    assert stock.quantity == 10
+    assert stock.reserved_quantity == 3
+
+    assert reservation.status == Reservation.Status.ACTIVE
+    assert reservation.confirmed_at is None
+
+def test_cancel_is_rolled_back_when_movement_creation_fails():
+    stock, reservation = create_active_reservation(
+        quantity=3,
+        stock_quantity=10,
+    )
+
+    with patch.object(
+        StockMovement.objects,
+        "create",
+        side_effect=RuntimeError("Movement creation failed"),
+    ):
+        with pytest.raises(RuntimeError):
+            ReservationService.cancel_reservation(
+                reservation_id=reservation.id,
+            )
+
+    stock.refresh_from_db()
+    reservation.refresh_from_db()
+
+    assert stock.quantity == 10
+    assert stock.reserved_quantity == 3
+
+    assert reservation.status == Reservation.Status.ACTIVE
+    assert reservation.cancelled_at is None
+
+def test_confirm_nonexistent_reservation_raises_error():
+    with pytest.raises(
+        ReservationNotFoundError
+    ):
+        ReservationService.confirm_reservation(
+            reservation_id=uuid.uuid4(),
+        )
+
+def test_cancel_nonexistent_reservation_raises_error():
+    with pytest.raises(
+        ReservationNotFoundError
+    ):
+        ReservationService.cancel_reservation(
+            reservation_id=uuid.uuid4(),
+        )
+
+def test_expire_reservation_releases_stock():
+    stock, reservation = create_active_reservation(
+        quantity=3,
+        stock_quantity=10,
+    )
+
+    Reservation.objects.filter(
+        id=reservation.id,
+    ).update(
+        expires_at=timezone.now() - timedelta(seconds=1),
+    )
+
+    reservation = ReservationService.expire_reservation(
+        reservation_id=reservation.id,
+    )
+
+    stock.refresh_from_db()
+    reservation.refresh_from_db()
+
+    assert reservation.status == Reservation.Status.EXPIRED
+    assert reservation.expired_at is not None
+
+    assert stock.quantity == 10
+    assert stock.reserved_quantity == 0
+    assert stock.available_quantity == 10
+
+def test_expire_reservation_creates_stock_movement():
+    stock, reservation = create_active_reservation(
+        quantity=3,
+        stock_quantity=10,
+    )
+
+    Reservation.objects.filter(
+        id=reservation.id,
+    ).update(
+        expires_at=timezone.now() - timedelta(seconds=1),
+    )
+
+    ReservationService.expire_reservation(
+        reservation_id=reservation.id,
+    )
+
+    movement = StockMovement.objects.get(
+        reservation=reservation,
+        movement_type=(
+            StockMovement.MovementType.RESERVATION_EXPIRED
+        ),
+    )
+
+    assert movement.quantity == 3
+
+    assert movement.quantity_before == 10
+    assert movement.quantity_after == 10
+
+    assert movement.reserved_before == 3
+    assert movement.reserved_after == 0
+
+def test_expire_reservation_is_idempotent():
+    stock, reservation = create_active_reservation(
+        quantity=3,
+        stock_quantity=10,
+    )
+
+    Reservation.objects.filter(
+        id=reservation.id,
+    ).update(
+        expires_at=timezone.now() - timedelta(seconds=1),
+    )
+
+    first = ReservationService.expire_reservation(
+        reservation_id=reservation.id,
+    )
+
+    second = ReservationService.expire_reservation(
+        reservation_id=reservation.id,
+    )
+
+    stock.refresh_from_db()
+
+    assert first.id == second.id
+
+    assert stock.quantity == 10
+    assert stock.reserved_quantity == 0
+
+    assert StockMovement.objects.filter(
+        reservation=reservation,
+        movement_type=(
+            StockMovement.MovementType.RESERVATION_EXPIRED
+        ),
+    ).count() == 1
+
+def test_active_reservation_cannot_expire_before_deadline():
+    stock, reservation = create_active_reservation(
+        quantity=3,
+        stock_quantity=10,
+    )
+
+    with pytest.raises(
+        ReservationNotExpiredError
+    ):
+        ReservationService.expire_reservation(
+            reservation_id=reservation.id,
+        )
+
+    stock.refresh_from_db()
+    reservation.refresh_from_db()
+
+    assert reservation.status == Reservation.Status.ACTIVE
+
+    assert stock.quantity == 10
+    assert stock.reserved_quantity == 3
+
+def test_confirmed_reservation_cannot_be_expired():
+    _, reservation = create_active_reservation()
+
+    ReservationService.confirm_reservation(
+        reservation_id=reservation.id,
+    )
+
+    with pytest.raises(
+        InvalidReservationStateError
+    ):
+        ReservationService.expire_reservation(
+            reservation_id=reservation.id,
+        )
+
+def test_cancelled_reservation_cannot_be_expired():
+    _, reservation = create_active_reservation()
+
+    ReservationService.cancel_reservation(
+        reservation_id=reservation.id,
+    )
+
+    with pytest.raises(
+        InvalidReservationStateError
+    ):
+        ReservationService.expire_reservation(
+            reservation_id=reservation.id,
+        )
+
+def test_expiration_is_rolled_back_when_movement_creation_fails():
+    stock, reservation = create_active_reservation(
+        quantity=3,
+        stock_quantity=10,
+    )
+
+    Reservation.objects.filter(
+        id=reservation.id,
+    ).update(
+        expires_at=timezone.now() - timedelta(seconds=1),
+    )
+
+    with patch.object(
+        StockMovement.objects,
+        "create",
+        side_effect=RuntimeError("Movement creation failed"),
+    ):
+        with pytest.raises(RuntimeError):
+            ReservationService.expire_reservation(
+                reservation_id=reservation.id,
+            )
+
+    stock.refresh_from_db()
+    reservation.refresh_from_db()
+
+    assert stock.quantity == 10
+    assert stock.reserved_quantity == 3
+
+    assert reservation.status == Reservation.Status.ACTIVE
+    assert reservation.expired_at is None
+
+def test_expire_nonexistent_reservation_raises_error():
+    with pytest.raises(
+        ReservationNotFoundError
+    ):
+        ReservationService.expire_reservation(
+            reservation_id=uuid.uuid4(),
+        )
